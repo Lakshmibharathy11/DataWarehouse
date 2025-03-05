@@ -1,0 +1,168 @@
+from airflow import DAG
+from airflow.models import Variable
+from airflow.decorators import task
+from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
+from airflow.utils.dates import days_ago
+
+from datetime import timedelta
+from datetime import datetime
+import snowflake.connector
+import requests
+
+import json
+
+def return_snowflake_conn():
+
+    # Initialize the SnowflakeHook
+    hook = SnowflakeHook(snowflake_conn_id='snowflake_conn')
+
+    # Execute the query and fetch results
+    conn = hook.get_conn()
+    return conn.cursor()
+
+@task
+def extract_stock(url):
+    f = requests.get(url)
+    data = f.json()
+    return data
+
+@task
+def transform(data):
+    records = []
+    # for d in data["Weekly Time Series"]:
+        # stock_info = data["Weekly Time Series
+    daily_data = data.get("Time Series (Daily)", {})
+    for date, stock_info in daily_data.items():
+        record = {
+            "symbol": Variable.get("NVDA_symbol"),
+            "date": date,
+            "open": stock_info["1. open"],
+            "close": stock_info["4. close"],
+            "high": stock_info["2. high"],
+            "low": stock_info["3. low"],
+            "volume": stock_info["5. volume"]
+        }
+        records.append(record)
+
+               
+        if len(records) >= 90:
+            break
+         
+    return records 
+
+@task
+def load_stock_prices(cur, records,target_table):
+    
+
+    try:
+        cur.execute("BEGIN;")  # Start transaction
+
+        # Step 1: Create table if it doesn't exist
+        cur.execute(f"""
+        CREATE TABLE IF NOT EXISTS {target_table} (
+            symbol STRING NOT NULL,
+            date DATE NOT NULL,
+            open FLOAT,
+            high FLOAT,
+            low FLOAT,
+            close FLOAT,
+            volume BIGINT,
+            PRIMARY KEY (symbol, date)
+        );
+           """)
+        cur.execute(f"""DELETE FROM {target_table}""")
+        # Insert new records into the table
+        for r in records:
+            symbol = r['symbol'].replace("'", "''")  # Escape single quotes
+            date = r['date']
+            open_price = r['open']
+            high = r['high']
+            low = r['low']
+            close = r['close']
+            volume = r['volume']
+
+            # Prepare and execute the insert statement
+            sql = f"""
+            INSERT INTO {target_table} (symbol, date, open, high, low, close, volume)
+            VALUES ('{symbol}', '{date}', {open_price}, {high}, {low}, {close}, {volume});
+            """
+            cur.execute(sql)
+
+        # Commit the transaction to persist changes
+        cur.execute("COMMIT;")
+
+    except Exception as e:
+        cur.execute("ROLLBACK;")
+        print(e)
+        raise e
+
+    finally:
+        # Close the cursor after the operation
+        cur.close()
+
+
+
+with DAG (
+    dag_id = 'NVDA_ETL',
+    start_date = datetime(2025,2,21),
+    catchup=False,
+    tags=['ETL_stockprice'],
+    schedule = '30 2 * * *'
+) as dag:
+    target_table_stock = "dev.raw.stock_price_NVDA"
+    url = Variable.get("NVDA_stock_price_url")
+    cur = return_snowflake_conn()
+
+    data = extract_stock(url)
+    stock_records = transform(data)
+    load_stock_prices(cur, stock_records, target_table_stock)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
